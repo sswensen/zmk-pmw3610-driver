@@ -533,6 +533,14 @@ static int pmw3610_report_data(const struct device *dev) {
     // fetch report value
     int16_t rx = (int16_t)CLAMP(dx, INT16_MIN, INT16_MAX);
     int16_t ry = (int16_t)CLAMP(dy, INT16_MIN, INT16_MAX);
+
+#if IS_ENABLED(CONFIG_PMW3610_ALT_ROTATE_45)
+    // Apply 45-degree rotation: cos(45°) = sin(45°) ≈ 707/1000
+    int16_t rx_rot = (int16_t)CLAMP(((int32_t)rx - (int32_t)ry) * 707 / 1000, INT16_MIN, INT16_MAX);
+    int16_t ry_rot = (int16_t)CLAMP(((int32_t)rx + (int32_t)ry) * 707 / 1000, INT16_MIN, INT16_MAX);
+    rx = rx_rot;
+    ry = ry_rot;
+#endif
     bool have_x = rx != 0;
     bool have_y = ry != 0;
 

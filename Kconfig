@@ -43,6 +43,13 @@ config PMW3610_ALT_REPORT_INTERVAL_MIN
 		Slow down input reporting for hid queue over the air.
 		Turn value down to 8ms to get sharp response if use with USB only.
 
+config PMW3610_ALT_ROTATE_45
+  bool "Apply 45-degree rotation to PMW3610 sensor output"
+  help
+    Apply a 45-degree clockwise rotation to the sensor X/Y output.
+    Useful when the sensor is physically mounted at a 45-degree angle
+    relative to the keyboard orientation (e.g. Charybdis trackball).
+
 config PMW3610_ALT_SMART_ALGORITHM
   bool "Enable an algorithm of PMW3610 to enhance surface coverage"
   default y
