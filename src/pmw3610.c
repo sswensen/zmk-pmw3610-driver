@@ -18,7 +18,7 @@
 LOG_MODULE_REGISTER(pmw3610, CONFIG_PMW3610_ALT_LOG_LEVEL);
 
 // The number of bursts to skip once we re‐enable performance
-#define PMW3610_DROP_BURSTS_AFTER_WAKE 3
+#define PMW3610_DROP_BURSTS_AFTER_WAKE 10
 static volatile int drop_motion_bursts;
 static bool last_performance_enabled = false;
 
