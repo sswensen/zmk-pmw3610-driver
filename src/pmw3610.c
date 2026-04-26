@@ -18,7 +18,7 @@
 LOG_MODULE_REGISTER(pmw3610, CONFIG_PMW3610_ALT_LOG_LEVEL);
 
 // The number of bursts to skip once we re‐enable performance
-#define PMW3610_DROP_BURSTS_AFTER_WAKE 10
+#define PMW3610_DROP_BURSTS_AFTER_WAKE 30
 static volatile int drop_motion_bursts;
 static bool last_performance_enabled = false;
 
@@ -271,10 +271,16 @@ static int pmw3610_set_performance(const struct device *dev, bool enabled) {
 
     // Prime drop-motion-burst counter on wake transition
     if (enabled && !last_performance_enabled) {
+        // Clear motion registers to drain stale data accumulated during REST mode
+        // (same procedure as pmw3610_async_init_configure, required by datasheet)
+        for (uint8_t reg = 0x02; reg <= 0x05; reg++) {
+            uint8_t tmp;
+            pmw3610_read_reg(dev, reg, &tmp);
+        }
         drop_motion_bursts = PMW3610_DROP_BURSTS_AFTER_WAKE;
         dx = 0;
         dy = 0;
-        LOG_INF("[pmw3610_set_performance] Wake transition: primed drop_motion_bursts = %d", PMW3610_DROP_BURSTS_AFTER_WAKE);
+        LOG_INF("[pmw3610_set_performance] Wake transition: cleared motion regs, primed drop_motion_bursts = %d", PMW3610_DROP_BURSTS_AFTER_WAKE);
     }
     last_performance_enabled = enabled;
 
@@ -487,7 +493,13 @@ static int pmw3610_report_data(const struct device *dev) {
         LOG_ERR("SPI burst read failed: %d", err);
         return err;
     }
-    // LOG_HEXDUMP_DBG(buf, PMW3610_BURST_SIZE, "buf");
+
+    // Check MOTION register MOT bit (bit 7): if not set, the sensor did not
+    // detect real motion -- the IRQ was spurious.  Skip processing to avoid
+    // reporting stale register contents as movement.
+    if (!(buf[0] & 0x80)) {
+        return 0;
+    }
 
 // 12-bit two's complement value to int16_t
 // adapted from https://stackoverflow.com/questions/70802306/convert-a-12-bit-signed-number-in-c
@@ -496,6 +508,47 @@ static int pmw3610_report_data(const struct device *dev) {
     int16_t x = TOINT16((buf[PMW3610_X_L_POS] + ((buf[PMW3610_XY_H_POS] & 0xF0) << 4)), 12);
     int16_t y = TOINT16((buf[PMW3610_Y_L_POS] + ((buf[PMW3610_XY_H_POS] & 0x0F) << 8)), 12);
     LOG_DBG("x/y: %d/%d", x, y);
+
+    // --- Stuck-motion auto-recovery ---
+    // Detect when the sensor is continuously reporting high-magnitude motion in a
+    // fixed direction (symptom of a corrupted sensor state after REST wake).
+    // After PMW3610_STUCK_THRESHOLD consecutive same-direction high-motion bursts,
+    // clear the sensor's motion registers and re-prime the drop guard.
+    {
+        #define PMW3610_STUCK_MOTION_MIN   100  // minimum |delta| per axis to count
+        #define PMW3610_STUCK_THRESHOLD    100  // consecutive bursts (~400ms at 4ms)
+
+        static int8_t  prev_sign_x;
+        static int8_t  prev_sign_y;
+        static uint32_t stuck_count;
+
+        int8_t sx = (x > PMW3610_STUCK_MOTION_MIN) ? 1 : (x < -PMW3610_STUCK_MOTION_MIN) ? -1 : 0;
+        int8_t sy = (y > PMW3610_STUCK_MOTION_MIN) ? 1 : (y < -PMW3610_STUCK_MOTION_MIN) ? -1 : 0;
+
+        if ((sx != 0 || sy != 0) && sx == prev_sign_x && sy == prev_sign_y) {
+            stuck_count++;
+            if (stuck_count >= PMW3610_STUCK_THRESHOLD) {
+                LOG_WRN("Stuck motion detected (x=%d y=%d, %u consecutive). "
+                        "Clearing sensor and re-priming drop guard.", x, y, stuck_count);
+                // Drain stale motion data from sensor registers
+                for (uint8_t reg = 0x02; reg <= 0x05; reg++) {
+                    uint8_t tmp;
+                    pmw3610_read_reg(dev, reg, &tmp);
+                }
+                drop_motion_bursts = PMW3610_DROP_BURSTS_AFTER_WAKE;
+                dx = 0;
+                dy = 0;
+                stuck_count = 0;
+                prev_sign_x = 0;
+                prev_sign_y = 0;
+                return 0;
+            }
+        } else {
+            stuck_count = 0;
+            prev_sign_x = sx;
+            prev_sign_y = sy;
+        }
+    }
 
 #ifdef CONFIG_PMW3610_ALT_SMART_ALGORITHM
     int16_t shutter = ((int16_t)(buf[PMW3610_SHUTTER_H_POS] & 0x01) << 8) 
